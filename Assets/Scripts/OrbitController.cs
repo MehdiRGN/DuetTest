@@ -9,6 +9,19 @@ public class OrbitController : MonoBehaviour
 
     private float currentAngle;
 
+    private void Awake()
+    {
+        if (gameManager == null)
+        {
+            gameManager = FindObjectOfType<GameManager>();
+        }
+    }
+
+    public void SetGameManager(GameManager manager)
+    {
+        gameManager = manager;
+    }
+
     private void Update()
     {
         if (gameManager != null && gameManager.IsGameOver)

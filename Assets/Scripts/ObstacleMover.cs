@@ -7,6 +7,14 @@ public class ObstacleMover : MonoBehaviour
     [SerializeField] private GameManager gameManager;
     [SerializeField] private float destroyYPosition = -12f;
 
+    private void Awake()
+    {
+        if (gameManager == null)
+        {
+            gameManager = FindObjectOfType<GameManager>();
+        }
+    }
+
     private void Update()
     {
         if (gameManager != null && gameManager.IsGameOver)
