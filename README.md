@@ -6,6 +6,14 @@ screen) to dodge falling obstacles. The twist on the original Duet formula:
 obstacles are color-coded, and each ball can only pass through obstacle
 sections matching its own color.
 
+## Web version (quick playtest)
+
+`web/index.html` is a lightweight, dependency-free HTML5 canvas port of the
+same game ("Split Orbit") using the same tuning values as the Unity scripts.
+Open it directly in any browser — desktop or phone — to playtest the design
+without installing Unity. Hold the left/right half of the screen (or use
+`←`/`→`, `A`/`D`) to spin.
+
 ## Opening the project
 
 1. Install Unity Hub and Unity `2022.3.21f1` (or update

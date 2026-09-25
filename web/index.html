@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Split Orbit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Unbounded:wght@500;700&display=swap">
+<style>
+  :root {
+    --ink: #0d1117;
+    --ink-veil: rgba(13, 17, 23, 0.78);
+    --line: #263040;
+    --text: #e7eaf0;
+    --muted: #8a95a6;
+    --a: #38c7ed;
+    --b: #f5528c;
+    --wall: #d6dae2;
+    --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; background: var(--ink); color: var(--text); }
+  body {
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: var(--mono);
+  }
+  #game { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 16px);
+    left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-inline: 20px;
+    pointer-events: none;
+  }
+  .score {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 40px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .best {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .panel {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding-inline: 24px;
+    background: var(--ink-veil);
+  }
+  .card { width: 100%; max-width: 340px; display: grid; gap: 22px; }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+  }
+  h1, .final {
+    font-family: var(--display);
+    font-weight: 700;
+    line-height: 0.95;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h1 { font-size: clamp(38px, 12vw, 56px); }
+  h1 .a { color: var(--a); }
+  h1 .b { color: var(--b); }
+  .final { font-size: clamp(56px, 18vw, 84px); font-variant-numeric: tabular-nums; }
+
+  .rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+  .rules li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: center; }
+  .rules b { color: var(--text); font-weight: 500; }
+  .glyph { height: 10px; border-radius: 1px; }
+  .glyph.wall { background: linear-gradient(90deg, var(--wall) 0 38%, transparent 38% 62%, var(--wall) 62%); }
+  .glyph.gate { background: linear-gradient(90deg, var(--a) 0 50%, var(--b) 50%); }
+  .glyph.spin { height: 14px; width: 34px; background:
+      radial-gradient(circle at 25% 50%, var(--a) 0 5px, transparent 5.5px),
+      radial-gradient(circle at 75% 50%, var(--b) 0 5px, transparent 5.5px); }
+
+  .play {
+    font: 500 14px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: var(--text);
+    border: 0;
+    border-radius: 999px;
+    padding: 16px 28px;
+    justify-self: start;
+    cursor: pointer;
+  }
+  .play:focus-visible { outline: 2px solid var(--a); outline-offset: 3px; }
+  .keys { font-size: 12px; color: var(--muted); margin: 0; }
+  kbd {
+    font: inherit;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Split Orbit game field"></canvas>
+
+<div class="hud" aria-live="polite">
+  <div class="score" id="score">0</div>
+  <div class="best" id="best">Best 0</div>
+</div>
+
+<div class="panel" id="start">
+  <div class="card">
+    <p class="eyebrow">A two-ball reflex game</p>
+    <h1><span class="a">Split</span> <span class="b">Orbit</span></h1>
+    <ul class="rules">
+      <li><span class="glyph spin"></span><span><b>Hold left or right</b> to spin the pair.</span></li>
+      <li><span class="glyph wall"></span><span><b>Grey walls:</b> turn upright and slip both balls through the gap.</span></li>
+      <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat, blue over blue, pink over pink.</span></li>
+    </ul>
+    <button class="play" id="playBtn" type="button">Play</button>
+    <p class="keys">Keyboard: <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd>, <kbd>Space</kbd> to start</p>
+  </div>
+</div>
+
+<div class="panel" id="over" hidden>
+  <div class="card">
+    <p class="eyebrow" id="overLabel">Game over</p>
+    <div class="final" id="finalScore">0</div>
+    <p class="keys" id="overBest">Best 0</p>
+    <button class="play" id="againBtn" type="button">Play again</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  // Tuning mirrors the Unity scripts (GameBootstrapper, GameManager, OrbitController, ObstacleSpawner).
+  const ORBIT_RADIUS = 1.2;
+  const BALL_RADIUS = 0.35;
+  const ROTATION_SPEED = 260 * Math.PI / 180;
+  const START_SPEED = 5, MAX_SPEED = 12, SPEED_RAMP = 0.05;
+  const BASE_INTERVAL = 1.4, MIN_INTERVAL = 0.6;
+  const OBSTACLE_WIDTH = 6, OBSTACLE_HEIGHT = 0.6, GAP_WIDTH = 1.6;
+  const PIVOT_Y = -2;
+  const TRAIL_LENGTH = 22;
+
+  const css = getComputedStyle(document.documentElement);
+  const color = name => css.getPropertyValue(name).trim();
+  const COLORS = { ink: color('--ink'), line: color('--line'), a: color('--a'), b: color('--b'), wall: color('--wall') };
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const startPanel = document.getElementById('start');
+  const overPanel = document.getElementById('over');
+  const finalScoreEl = document.getElementById('finalScore');
+  const overBestEl = document.getElementById('overBest');
+  const overLabelEl = document.getElementById('overLabel');
+
+  let best = 0;
+  try { best = Number(localStorage.getItem('split-orbit-best')) || 0; } catch (e) {}
+
+  let W = 0, H = 0, scale = 1, halfH = 5;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    scale = Math.min(H / 10, W / 6.6);
+    halfH = H / scale / 2;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const toX = x => W / 2 + x * scale;
+  const toY = y => H / 2 - y * scale;
+
+  const makeGapBar = y => {
+    const side = (OBSTACLE_WIDTH - GAP_WIDTH) / 2;
+    return { y, pieces: [
+      { x0: -OBSTACLE_WIDTH / 2, x1: -GAP_WIDTH / 2, pass: null },
+      { x0: GAP_WIDTH / 2, x1: GAP_WIDTH / 2 + side, pass: null },
+    ] };
+  };
+  const makeColorGate = y => ({ y, pieces: [
+    { x0: -OBSTACLE_WIDTH / 2, x1: 0, pass: 'a' },
+    { x0: 0, x1: OBSTACLE_WIDTH / 2, pass: 'b' },
+  ] });
+
+  let state;
+  function reset(mode) {
+    state = {
+      mode, angle: 0, time: 0, speed: START_SPEED, spawnTimer: 0,
+      obstacles: [], trails: { a: [], b: [] }, hit: null, hitTime: 0,
+    };
+    scoreEl.textContent = '0';
+    bestEl.textContent = `Best ${best}`;
+  }
+
+  function ballPositions() {
+    const c = Math.cos(state.angle), s = Math.sin(state.angle);
+    return {
+      a: { x: -ORBIT_RADIUS * c, y: PIVOT_Y - ORBIT_RADIUS * s },
+      b: { x: ORBIT_RADIUS * c, y: PIVOT_Y + ORBIT_RADIUS * s },
+    };
+  }
+
+  function circleHitsRect(cx, cy, r, x0, x1, y0, y1) {
+    const nx = Math.max(x0, Math.min(cx, x1));
+    const ny = Math.max(y0, Math.min(cy, y1));
+    return (cx - nx) ** 2 + (cy - ny) ** 2 < r * r;
+  }
+
+  // Input: which half of the screen is held (left = counter-clockwise), mirroring OrbitController.
+  const pointers = new Map();
+  const keys = { left: false, right: false };
+  function readInput() {
+    if (keys.left && !keys.right) return 1;
+    if (keys.right && !keys.left) return -1;
+    let last = null;
+    for (const x of pointers.values()) last = x;
+    if (last === null) return 0;
+    return last < W / 2 ? 1 : -1;
+  }
+
+  canvas.addEventListener('pointerdown', e => { pointers.set(e.pointerId, e.clientX); });
+  canvas.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, e.clientX); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => canvas.addEventListener(t, e => pointers.delete(e.pointerId)));
+  window.addEventListener('blur', () => { pointers.clear(); keys.left = keys.right = false; });
+
+  window.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+    if ((e.key === ' ' || e.key === 'Enter') && state.mode !== 'play') { e.preventDefault(); startGame(); }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+  });
+
+  function startGame() {
+    pointers.clear();
+    reset('play');
+    startPanel.hidden = true;
+    overPanel.hidden = true;
+  }
+  document.getElementById('playBtn').addEventListener('click', startGame);
+  document.getElementById('againBtn').addEventListener('click', startGame);
+
+  function endGame(which) {
+    state.mode = 'over';
+    state.hit = which;
+    state.hitTime = 0;
+    const score = Math.floor(state.time * 10);
+    const isBest = score > best;
+    if (isBest) {
+      best = score;
+      try { localStorage.setItem('split-orbit-best', String(best)); } catch (e) {}
+    }
+    finalScoreEl.textContent = score;
+    overLabelEl.textContent = isBest ? 'New best' : 'Game over';
+    overBestEl.textContent = `Best ${best}`;
+    bestEl.textContent = `Best ${best}`;
+    setTimeout(() => { if (state.mode === 'over') overPanel.hidden = false; }, 450);
+  }
+
+  function update(dt) {
+    if (state.mode === 'over') { state.hitTime += dt; return; }
+
+    if (state.mode === 'attract') {
+      state.angle += dt * 0.9;
+    } else {
+      state.angle += readInput() * ROTATION_SPEED * dt;
+      state.time += dt;
+      state.speed = Math.min(MAX_SPEED, START_SPEED + state.time * SPEED_RAMP);
+      scoreEl.textContent = Math.floor(state.time * 10);
+
+      state.spawnTimer -= dt;
+      if (state.spawnTimer <= 0) {
+        const spawnY = Math.max(6.5, halfH + OBSTACLE_HEIGHT);
+        state.obstacles.push(Math.random() < 0.5 ? makeGapBar(spawnY) : makeColorGate(spawnY));
+        state.spawnTimer = Math.max(MIN_INTERVAL, BASE_INTERVAL - state.time * 0.01);
+      }
+    }
+
+    const dy = state.speed * dt * (state.mode === 'attract' ? 0.4 : 1);
+    for (const o of state.obstacles) o.y -= dy;
+    state.obstacles = state.obstacles.filter(o => o.y > -halfH - 2);
+
+    const balls = ballPositions();
+    for (const k of ['a', 'b']) {
+      const trail = state.trails[k];
+      for (const p of trail) p.y -= dy;
+      trail.push({ x: balls[k].x, y: balls[k].y });
+      if (trail.length > TRAIL_LENGTH) trail.shift();
+    }
+
+    if (state.mode !== 'play') return;
+    for (const o of state.obstacles) {
+      const y0 = o.y - OBSTACLE_HEIGHT / 2, y1 = o.y + OBSTACLE_HEIGHT / 2;
+      for (const p of o.pieces) {
+        for (const k of ['a', 'b']) {
+          if (p.pass === k) continue;
+          if (circleHitsRect(balls[k].x, balls[k].y, BALL_RADIUS, p.x0, p.x1, y0, y1)) {
+            endGame(k);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  function draw() {
+    ctx.fillStyle = COLORS.ink;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = COLORS.line;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(toX(0), toY(PIVOT_Y), ORBIT_RADIUS * scale, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const h = OBSTACLE_HEIGHT * scale;
+    for (const o of state.obstacles) {
+      for (const p of o.pieces) {
+        ctx.fillStyle = p.pass ? COLORS[p.pass] : COLORS.wall;
+        ctx.fillRect(toX(p.x0), toY(o.y) - h / 2, (p.x1 - p.x0) * scale, h);
+      }
+      if (o.pieces[0].pass) {
+        ctx.fillStyle = COLORS.ink;
+        ctx.fillRect(toX(0) - 1, toY(o.y) - h / 2, 2, h);
+      }
+    }
+
+    const balls = ballPositions();
+    for (const k of ['a', 'b']) {
+      const trail = state.trails[k];
+      ctx.fillStyle = COLORS[k];
+      for (let i = 0; i < trail.length - 1; i++) {
+        const t = i / trail.length;
+        ctx.globalAlpha = t * 0.35;
+        ctx.beginPath();
+        ctx.arc(toX(trail[i].x), toY(trail[i].y), BALL_RADIUS * scale * (0.35 + t * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    for (const k of ['a', 'b']) {
+      const x = toX(balls[k].x), y = toY(balls[k].y), r = BALL_RADIUS * scale;
+      ctx.fillStyle = COLORS[k];
+      ctx.shadowColor = COLORS[k];
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      if (state.hit === k && !reducedMotion) {
+        const t = Math.min(state.hitTime / 0.5, 1);
+        ctx.strokeStyle = COLORS[k];
+        ctx.globalAlpha = 1 - t;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, r * (1 + t * 3), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  reset('attract');
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
