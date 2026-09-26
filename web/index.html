@@ -58,6 +58,21 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .toast {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 78px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: var(--text);
+    border-radius: 999px;
+    padding: 8px 14px;
+    white-space: nowrap;
+    pointer-events: none;
+  }
   .panel {
     position: fixed;
     inset: 0;
@@ -92,6 +107,7 @@
   .glyph { height: 10px; border-radius: 1px; }
   .glyph.wall { background: linear-gradient(90deg, var(--wall) 0 38%, transparent 38% 62%, var(--wall) 62%); }
   .glyph.gate { background: linear-gradient(90deg, var(--a) 0 50%, var(--b) 50%); }
+  .glyph.pillar { background: linear-gradient(90deg, transparent 0 42%, var(--wall) 42% 58%, transparent 58%); height: 16px; }
   .glyph.spin { height: 14px; width: 34px; background:
       radial-gradient(circle at 25% 50%, var(--a) 0 5px, transparent 5.5px),
       radial-gradient(circle at 75% 50%, var(--b) 0 5px, transparent 5.5px); }
@@ -127,6 +143,8 @@
   <div class="best" id="best">Best 0</div>
 </div>
 
+<div class="toast" id="toast" role="status" hidden></div>
+
 <div class="panel" id="start">
   <div class="card">
     <p class="eyebrow">A two-ball reflex game</p>
@@ -134,7 +152,8 @@
     <ul class="rules">
       <li><span class="glyph spin"></span><span><b>Hold left or right</b> to spin the pair.</span></li>
       <li><span class="glyph wall"></span><span><b>Grey walls:</b> turn upright and slip both balls through the gap.</span></li>
-      <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat, blue over blue, pink over pink.</span></li>
+      <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat, blue over blue, pink over pink. The colors swap sides.</span></li>
+      <li><span class="glyph pillar"></span><span><b>Pillars and blocks:</b> find the pose that clears them. Speed shifts every minute.</span></li>
     </ul>
     <button class="play" id="playBtn" type="button">Play</button>
     <p class="keys">Keyboard: <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd>, <kbd>Space</kbd> to start</p>
@@ -152,15 +171,19 @@
 
 <script>
 (() => {
-  // Tuning mirrors the Unity scripts (GameBootstrapper, GameManager, OrbitController, ObstacleSpawner).
+  // Core feel mirrors the Unity scripts (orbit radius, spin rate, speed ramp).
   const ORBIT_RADIUS = 1.2;
   const BALL_RADIUS = 0.35;
-  const ROTATION_SPEED = 260 * Math.PI / 180;
+  const ROTATION_DEG_PER_SEC = 260;
+  const ROTATION_SPEED = ROTATION_DEG_PER_SEC * Math.PI / 180;
   const START_SPEED = 5, MAX_SPEED = 12, SPEED_RAMP = 0.05;
   const BASE_INTERVAL = 1.4, MIN_INTERVAL = 0.6;
-  const OBSTACLE_WIDTH = 6, OBSTACLE_HEIGHT = 0.6, GAP_WIDTH = 1.6;
+  const HALF_WIDTH = 3;
   const PIVOT_Y = -2;
   const TRAIL_LENGTH = 22;
+  const TEMPO_PERIOD = 60;
+  const TEMPO_MIN = 0.75, TEMPO_MAX = 1.4;
+  const SPEED_FLOOR = 4, SPEED_CEIL = 14;
 
   const css = getComputedStyle(document.documentElement);
   const color = name => css.getPropertyValue(name).trim();
@@ -171,6 +194,7 @@
   const ctx = canvas.getContext('2d');
   const scoreEl = document.getElementById('score');
   const bestEl = document.getElementById('best');
+  const toastEl = document.getElementById('toast');
   const startPanel = document.getElementById('start');
   const overPanel = document.getElementById('over');
   const finalScoreEl = document.getElementById('finalScore');
@@ -194,27 +218,112 @@
 
   const toX = x => W / 2 + x * scale;
   const toY = y => H / 2 - y * scale;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const coin = () => Math.random() < 0.5;
+  const piece = (x0, x1, h, pass = null, yOffset = 0) => ({ x0, x1, y0: yOffset - h / 2, y1: yOffset + h / 2, pass });
 
-  const makeGapBar = y => {
-    const side = (OBSTACLE_WIDTH - GAP_WIDTH) / 2;
-    return { y, pieces: [
-      { x0: -OBSTACLE_WIDTH / 2, x1: -GAP_WIDTH / 2, pass: null },
-      { x0: GAP_WIDTH / 2, x1: GAP_WIDTH / 2 + side, pass: null },
-    ] };
+  // Every shape is built so at least one ball orientation (its "pose") gets
+  // both balls through: upright (balls stacked on x = 0), flat (balls at
+  // x = ±1.2), or flat with blue on a specific side.
+  const SHAPES = {
+    gapBar() {
+      const w = rand(1.6, 2.1), c = rand(-0.3, 0.3), h = rand(0.5, 0.8);
+      return { pose: 'upright', h, pieces: [piece(-HALF_WIDTH, c - w / 2, h), piece(c + w / 2, HALF_WIDTH, h)] };
+    },
+    colorGate() {
+      const seam = rand(-0.4, 0.4), h = rand(0.5, 0.9);
+      const blueLeft = coin();
+      return {
+        pose: blueLeft ? 'blueLeft' : 'blueRight', h, seam,
+        pieces: [piece(-HALF_WIDTH, seam, h, blueLeft ? 'a' : 'b'), piece(seam, HALF_WIDTH, h, blueLeft ? 'b' : 'a')],
+      };
+    },
+    sideWall() {
+      const edge = rand(0.45, 0.85), h = rand(0.6, 1.6);
+      return { pose: 'upright', h, pieces: [coin() ? piece(-HALF_WIDTH, -edge, h) : piece(edge, HALF_WIDTH, h)] };
+    },
+    pillar() {
+      const w = rand(0.2, 0.45), h = rand(0.8, 2.6);
+      return { pose: 'flat', h, pieces: [piece(-w, w, h)] };
+    },
+    twinBlocks() {
+      const p = rand(0.8, 1.1), s = rand(0.5, 0.7);
+      return { pose: 'upright', h: s, pieces: [piece(-p - s / 2, -p + s / 2, s), piece(p - s / 2, p + s / 2, s)] };
+    },
+    block() {
+      const s = 0.7;
+      const centered = coin();
+      const p = (coin() ? 1 : -1) * (centered ? rand(0, 0.4) : rand(0.8, 1.0));
+      return { pose: centered ? 'flat' : 'upright', h: s, pieces: [piece(p - s / 2, p + s / 2, s)] };
+    },
   };
-  const makeColorGate = y => ({ y, pieces: [
-    { x0: -OBSTACLE_WIDTH / 2, x1: 0, pass: 'a' },
-    { x0: 0, x1: OBSTACLE_WIDTH / 2, pass: 'b' },
-  ] });
+  const WEIGHTS = { gapBar: 3, colorGate: 4, sideWall: 2, pillar: 2, twinBlocks: 2, block: 2 };
+
+  function pickKind(history) {
+    const banned = history.length >= 2 && history[history.length - 1] === history[history.length - 2]
+      ? history[history.length - 1] : null;
+    const entries = Object.entries(WEIGHTS).filter(([k]) => k !== banned);
+    let roll = Math.random() * entries.reduce((sum, [, w]) => sum + w, 0);
+    for (const [k, w] of entries) { roll -= w; if (roll <= 0) return k; }
+    return entries[entries.length - 1][0];
+  }
+
+  // Degrees of rotation needed to get from one pose to the next.
+  function turnBetween(from, to) {
+    if (!from || from === to) return 0;
+    if (from === 'upright' || to === 'upright') return 90;
+    if (to === 'flat') return 0;
+    // Flat may be held either way round, so reaching a specific color side can take a half turn.
+    return 180;
+  }
 
   let state;
   function reset(mode) {
     state = {
-      mode, angle: 0, time: 0, speed: START_SPEED, spawnTimer: 0,
-      obstacles: [], trails: { a: [], b: [] }, hit: null, hitTime: 0,
+      mode, angle: 0, time: 0, speed: START_SPEED, spawnTimer: 0.8,
+      tempo: 1, tempoTarget: 1, nextTempoAt: TEMPO_PERIOD,
+      obstacles: [], history: [], lastShape: null, next: null,
+      trails: { a: [], b: [] }, hit: null, hitTime: 0,
     };
+    const firstKind = pickKind([]);
+    state.history.push(firstKind);
+    state.next = SHAPES[firstKind]();
     scoreEl.textContent = '0';
     bestEl.textContent = `Best ${best}`;
+    toastEl.hidden = true;
+  }
+
+  let toastTimer = null;
+  function showToast(text) {
+    toastEl.textContent = text;
+    toastEl.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2200);
+  }
+
+  function shiftTempo() {
+    let next;
+    do { next = rand(TEMPO_MIN, TEMPO_MAX); } while (Math.abs(next - state.tempoTarget) < 0.15);
+    const faster = next > state.tempoTarget;
+    state.tempoTarget = next;
+    showToast(`${faster ? 'Faster' : 'Slower'} · speed ×${next.toFixed(2)}`);
+  }
+
+  function spawnNext() {
+    const shape = state.next;
+    const kind = pickKind(state.history);
+    state.history.push(kind);
+    if (state.history.length > 4) state.history.shift();
+
+    const spawnY = Math.max(6.5, halfH + 1.5);
+    state.obstacles.push({ y: spawnY + shape.h / 2, ...shape });
+
+    const upcoming = SHAPES[kind]();
+    const turnTime = turnBetween(shape.pose, upcoming.pose) / ROTATION_DEG_PER_SEC;
+    const clearTime = (shape.h / 2 + upcoming.h / 2 + 2 * ORBIT_RADIUS + 2 * BALL_RADIUS) / state.speed;
+    const base = Math.max(MIN_INTERVAL, BASE_INTERVAL - state.time * 0.01) * rand(0.8, 1.35);
+    state.spawnTimer = Math.max(base, clearTime + turnTime + 0.2);
+    state.next = upcoming;
   }
 
   function ballPositions() {
@@ -271,6 +380,7 @@
     state.mode = 'over';
     state.hit = which;
     state.hitTime = 0;
+    toastEl.hidden = true;
     const score = Math.floor(state.time * 10);
     const isBest = score > best;
     if (isBest) {
@@ -292,20 +402,23 @@
     } else {
       state.angle += readInput() * ROTATION_SPEED * dt;
       state.time += dt;
-      state.speed = Math.min(MAX_SPEED, START_SPEED + state.time * SPEED_RAMP);
       scoreEl.textContent = Math.floor(state.time * 10);
 
-      state.spawnTimer -= dt;
-      if (state.spawnTimer <= 0) {
-        const spawnY = Math.max(6.5, halfH + OBSTACLE_HEIGHT);
-        state.obstacles.push(Math.random() < 0.5 ? makeGapBar(spawnY) : makeColorGate(spawnY));
-        state.spawnTimer = Math.max(MIN_INTERVAL, BASE_INTERVAL - state.time * 0.01);
+      if (state.time >= state.nextTempoAt) {
+        state.nextTempoAt += TEMPO_PERIOD;
+        shiftTempo();
       }
+      state.tempo += (state.tempoTarget - state.tempo) * Math.min(1, dt * 1.5);
+      const ramp = Math.min(MAX_SPEED, START_SPEED + state.time * SPEED_RAMP);
+      state.speed = Math.max(SPEED_FLOOR, Math.min(SPEED_CEIL, ramp * state.tempo));
+
+      state.spawnTimer -= dt;
+      if (state.spawnTimer <= 0) spawnNext();
     }
 
     const dy = state.speed * dt * (state.mode === 'attract' ? 0.4 : 1);
     for (const o of state.obstacles) o.y -= dy;
-    state.obstacles = state.obstacles.filter(o => o.y > -halfH - 2);
+    state.obstacles = state.obstacles.filter(o => o.y + o.h / 2 > -halfH - 1);
 
     const balls = ballPositions();
     for (const k of ['a', 'b']) {
@@ -317,11 +430,10 @@
 
     if (state.mode !== 'play') return;
     for (const o of state.obstacles) {
-      const y0 = o.y - OBSTACLE_HEIGHT / 2, y1 = o.y + OBSTACLE_HEIGHT / 2;
       for (const p of o.pieces) {
         for (const k of ['a', 'b']) {
           if (p.pass === k) continue;
-          if (circleHitsRect(balls[k].x, balls[k].y, BALL_RADIUS, p.x0, p.x1, y0, y1)) {
+          if (circleHitsRect(balls[k].x, balls[k].y, BALL_RADIUS, p.x0, p.x1, o.y + p.y0, o.y + p.y1)) {
             endGame(k);
             return;
           }
@@ -340,15 +452,14 @@
     ctx.arc(toX(0), toY(PIVOT_Y), ORBIT_RADIUS * scale, 0, Math.PI * 2);
     ctx.stroke();
 
-    const h = OBSTACLE_HEIGHT * scale;
     for (const o of state.obstacles) {
       for (const p of o.pieces) {
         ctx.fillStyle = p.pass ? COLORS[p.pass] : COLORS.wall;
-        ctx.fillRect(toX(p.x0), toY(o.y) - h / 2, (p.x1 - p.x0) * scale, h);
+        ctx.fillRect(toX(p.x0), toY(o.y + p.y1), (p.x1 - p.x0) * scale, (p.y1 - p.y0) * scale);
       }
-      if (o.pieces[0].pass) {
+      if (o.seam !== undefined) {
         ctx.fillStyle = COLORS.ink;
-        ctx.fillRect(toX(0) - 1, toY(o.y) - h / 2, 2, h);
+        ctx.fillRect(toX(o.seam) - 1, toY(o.y + o.h / 2), 2, o.h * scale);
       }
     }
 

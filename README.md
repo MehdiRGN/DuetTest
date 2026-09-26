@@ -8,8 +8,13 @@ sections matching its own color.
 
 ## Web version (quick playtest)
 
-`web/index.html` is a lightweight, dependency-free HTML5 canvas port of the
-same game ("Split Orbit") using the same tuning values as the Unity scripts.
+`web/index.html` is a lightweight, dependency-free HTML5 canvas version of
+the game ("Split Orbit"). It shares the Unity scripts' core feel (orbit
+radius, spin rate, speed ramp) and goes further on variety: six randomized
+obstacle shapes (gap bars, color gates whose colors swap sides, side walls,
+pillars, twin blocks, single blocks) in a non-repeating random order, spacing
+that always leaves time to rotate into the next required pose, and a random
+speed shift every 60 seconds.
 Open it directly in any browser — desktop or phone — to playtest the design
 without installing Unity. Hold the left/right half of the screen (or use
 `←`/`→`, `A`/`D`) to spin.
