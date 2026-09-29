@@ -108,6 +108,7 @@
   .glyph.wall { background: linear-gradient(90deg, var(--wall) 0 38%, transparent 38% 62%, var(--wall) 62%); }
   .glyph.gate { background: linear-gradient(90deg, var(--a) 0 50%, var(--b) 50%); }
   .glyph.pillar { background: linear-gradient(90deg, transparent 0 42%, var(--wall) 42% 58%, transparent 58%); height: 16px; }
+  .glyph.shift { height: 12px; background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 7px); }
   .glyph.spin { height: 14px; width: 34px; background:
       radial-gradient(circle at 25% 50%, var(--a) 0 5px, transparent 5.5px),
       radial-gradient(circle at 75% 50%, var(--b) 0 5px, transparent 5.5px); }
@@ -126,6 +127,22 @@
   }
   .play:focus-visible { outline: 2px solid var(--a); outline-offset: 3px; }
   .keys { font-size: 12px; color: var(--muted); margin: 0; }
+  .sound {
+    position: fixed;
+    right: 16px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+    font: 500 11px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 10px 14px;
+    cursor: pointer;
+  }
+  .sound[aria-pressed="true"] { color: var(--text); }
+  .sound:focus-visible { outline: 2px solid var(--a); outline-offset: 3px; }
   kbd {
     font: inherit;
     color: var(--text);
@@ -152,11 +169,12 @@
     <ul class="rules">
       <li><span class="glyph spin"></span><span><b>Hold left or right</b> to spin the pair.</span></li>
       <li><span class="glyph wall"></span><span><b>Grey walls:</b> turn upright and slip both balls through the gap.</span></li>
-      <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat, blue over blue, pink over pink. The colors swap sides.</span></li>
-      <li><span class="glyph pillar"></span><span><b>Pillars and blocks:</b> find the pose that clears them. Speed shifts every minute.</span></li>
+      <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat with each ball over its own color. Sides swap.</span></li>
+      <li><span class="glyph pillar"></span><span><b>Pillars and spinners:</b> spinners in the middle need you flat, spinners at the sides need you upright.</span></li>
+      <li><span class="glyph shift"></span><span><b>Every minute</b> the speed jumps between ×0.5 and ×2. Every two minutes the ball colors change.</span></li>
     </ul>
     <button class="play" id="playBtn" type="button">Play</button>
-    <p class="keys">Keyboard: <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd>, <kbd>Space</kbd> to start</p>
+    <p class="keys">Keyboard: <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd>, <kbd>Space</kbd> to start, <kbd>M</kbd> for music</p>
   </div>
 </div>
 
@@ -168,6 +186,8 @@
     <button class="play" id="againBtn" type="button">Play again</button>
   </div>
 </div>
+
+<button class="sound" id="soundBtn" type="button" aria-pressed="true">Music on</button>
 
 <script>
 (() => {
@@ -182,12 +202,20 @@
   const PIVOT_Y = -2;
   const TRAIL_LENGTH = 22;
   const TEMPO_PERIOD = 60;
-  const TEMPO_MIN = 0.75, TEMPO_MAX = 1.4;
-  const SPEED_FLOOR = 4, SPEED_CEIL = 14;
+  const TEMPO_MIN = 0.5, TEMPO_MAX = 2;
+  const SPEED_FLOOR = 2.5, SPEED_CEIL = 20;
+  const PALETTE_PERIOD = 120;
+  const ROTATING_UNLOCK = 15;
 
   const css = getComputedStyle(document.documentElement);
-  const color = name => css.getPropertyValue(name).trim();
-  const COLORS = { ink: color('--ink'), line: color('--line'), a: color('--a'), b: color('--b'), wall: color('--wall') };
+  const cssColor = name => css.getPropertyValue(name).trim();
+  const PALETTES = [
+    [cssColor('--a'), cssColor('--b')],
+    ['#8be04e', '#a77bff'],
+    ['#ffb23f', '#3d8bff'],
+    ['#3ee0b0', '#ff6b4a'],
+  ];
+  const COLORS = { ink: cssColor('--ink'), line: cssColor('--line'), wall: cssColor('--wall'), a: PALETTES[0][0], b: PALETTES[0][1] };
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const canvas = document.getElementById('game');
@@ -195,14 +223,18 @@
   const scoreEl = document.getElementById('score');
   const bestEl = document.getElementById('best');
   const toastEl = document.getElementById('toast');
+  const soundBtn = document.getElementById('soundBtn');
   const startPanel = document.getElementById('start');
   const overPanel = document.getElementById('over');
   const finalScoreEl = document.getElementById('finalScore');
   const overBestEl = document.getElementById('overBest');
   const overLabelEl = document.getElementById('overLabel');
 
-  let best = 0;
-  try { best = Number(localStorage.getItem('split-orbit-best')) || 0; } catch (e) {}
+  const store = {
+    get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch (e) {} },
+  };
+  let best = Number(store.get('split-orbit-best')) || 0;
 
   let W = 0, H = 0, scale = 1, halfH = 5;
   function resize() {
@@ -220,49 +252,186 @@
   const toY = y => H / 2 - y * scale;
   const rand = (a, b) => a + Math.random() * (b - a);
   const coin = () => Math.random() < 0.5;
-  const piece = (x0, x1, h, pass = null, yOffset = 0) => ({ x0, x1, y0: yOffset - h / 2, y1: yOffset + h / 2, pass });
+  const sign = () => (coin() ? 1 : -1);
 
-  // Every shape is built so at least one ball orientation (its "pose") gets
-  // both balls through: upright (balls stacked on x = 0), flat (balls at
-  // x = ±1.2), or flat with blue on a specific side.
+  const hexToRgb = hex => { const n = parseInt(hex.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+  const mix = (h1, h2, t) => {
+    const a = hexToRgb(h1), b = hexToRgb(h2);
+    return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`;
+  };
+
+  // ---------- Music: a small WebAudio synth loop whose tempo follows game speed ----------
+  const Music = (() => {
+    const CHORDS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
+    const BASE_BPM = 112;
+    let ac = null, master = null, noise = null, timer = null;
+    let step = 0, nextTime = 0, bpm = BASE_BPM, playing = false;
+    let muted = store.get('split-orbit-muted') === '1';
+    const mtof = m => 440 * 2 ** ((m - 69) / 12);
+
+    function ensure() {
+      if (!ac) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return false;
+        ac = new Ctx();
+        master = ac.createGain();
+        master.gain.value = muted ? 0 : 0.45;
+        master.connect(ac.destination);
+        noise = ac.createBuffer(1, ac.sampleRate * 0.2, ac.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (ac.state === 'suspended') ac.resume();
+      return true;
+    }
+
+    function tone(freq, t, dur, type, vol) {
+      const osc = ac.createOscillator(), g = ac.createGain();
+      osc.type = type; osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(g).connect(master);
+      osc.start(t); osc.stop(t + dur + 0.02);
+    }
+    function kick(t) {
+      const osc = ac.createOscillator(), g = ac.createGain();
+      osc.frequency.setValueAtTime(140, t);
+      osc.frequency.exponentialRampToValueAtTime(42, t + 0.14);
+      g.gain.setValueAtTime(0.8, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+      osc.connect(g).connect(master);
+      osc.start(t); osc.stop(t + 0.2);
+    }
+    function hat(t, vol) {
+      const src = ac.createBufferSource(), hp = ac.createBiquadFilter(), g = ac.createGain();
+      src.buffer = noise; hp.type = 'highpass'; hp.frequency.value = 7000;
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+      src.connect(hp).connect(g).connect(master);
+      src.start(t); src.stop(t + 0.06);
+    }
+    function playStep(s, t, sixteenth) {
+      const i = s % 16, chord = CHORDS[Math.floor(s / 16) % CHORDS.length];
+      if (i % 4 === 0) kick(t);
+      if (i % 2 === 1) hat(t, i % 4 === 2 ? 0.12 : 0.06);
+      if (i % 8 === 0) tone(mtof(chord[0] - 24), t, sixteenth * 7, 'triangle', 0.3);
+      const note = chord[i % 3] + 12 + (i % 6 >= 3 ? 12 : 0);
+      tone(mtof(note), t, sixteenth * 0.9, 'square', 0.045);
+    }
+    function schedule() {
+      const sixteenth = 60 / bpm / 4;
+      while (nextTime < ac.currentTime + 0.12) {
+        playStep(step, nextTime, sixteenth);
+        nextTime += sixteenth;
+        step++;
+      }
+    }
+    return {
+      start() {
+        if (!ensure()) return;
+        if (playing) return;
+        playing = true; step = 0; nextTime = ac.currentTime + 0.06;
+        timer = setInterval(schedule, 25);
+      },
+      stop() {
+        playing = false;
+        clearInterval(timer);
+      },
+      crash() {
+        if (!ac) return;
+        const t = ac.currentTime;
+        tone(220, t, 0.5, 'sawtooth', 0.12);
+        tone(110, t + 0.08, 0.6, 'triangle', 0.25);
+      },
+      setTempo(multiplier) {
+        bpm = BASE_BPM * Math.max(0.75, Math.min(1.4, 1 + (multiplier - 1) * 0.4));
+      },
+      get muted() { return muted; },
+      toggle() {
+        muted = !muted;
+        store.set('split-orbit-muted', muted ? '1' : '0');
+        if (ensure()) master.gain.setTargetAtTime(muted ? 0 : 0.45, ac.currentTime, 0.05);
+        return muted;
+      },
+    };
+  })();
+
+  function renderSoundButton() {
+    soundBtn.textContent = Music.muted ? 'Music off' : 'Music on';
+    soundBtn.setAttribute('aria-pressed', String(!Music.muted));
+  }
+  soundBtn.addEventListener('click', () => { Music.toggle(); renderSoundButton(); soundBtn.blur(); });
+  renderSoundButton();
+
+  // ---------- Obstacles ----------
+  // A piece is a rectangle centered at (x, y) relative to its obstacle, optionally spinning
+  // around its own center. Every shape guarantees one ball orientation (its "pose") gets
+  // both balls through at any spin angle: upright (balls stacked on x = 0), flat (balls
+  // at x = ±1.2), or flat with ball A on a specific side.
+  const rect = (x0, x1, h, pass = null) => ({ x: (x0 + x1) / 2, y: 0, hw: (x1 - x0) / 2, hh: h / 2, a0: 0, spin: 0, pass });
+  const bar = (x, length, thickness, a0, spin) => ({ x, y: 0, hw: length / 2, hh: thickness / 2, a0, spin, pass: null });
+  const reachOf = p => Math.hypot(p.hw, p.hh);
+
   const SHAPES = {
     gapBar() {
       const w = rand(1.6, 2.1), c = rand(-0.3, 0.3), h = rand(0.5, 0.8);
-      return { pose: 'upright', h, pieces: [piece(-HALF_WIDTH, c - w / 2, h), piece(c + w / 2, HALF_WIDTH, h)] };
+      return { pose: 'upright', h, pieces: [rect(-HALF_WIDTH, c - w / 2, h), rect(c + w / 2, HALF_WIDTH, h)] };
     },
     colorGate() {
       const seam = rand(-0.4, 0.4), h = rand(0.5, 0.9);
-      const blueLeft = coin();
+      const aLeft = coin();
       return {
-        pose: blueLeft ? 'blueLeft' : 'blueRight', h, seam,
-        pieces: [piece(-HALF_WIDTH, seam, h, blueLeft ? 'a' : 'b'), piece(seam, HALF_WIDTH, h, blueLeft ? 'b' : 'a')],
+        pose: aLeft ? 'aLeft' : 'aRight', h, seam,
+        pieces: [rect(-HALF_WIDTH, seam, h, aLeft ? 'a' : 'b'), rect(seam, HALF_WIDTH, h, aLeft ? 'b' : 'a')],
       };
     },
     sideWall() {
       const edge = rand(0.45, 0.85), h = rand(0.6, 1.6);
-      return { pose: 'upright', h, pieces: [coin() ? piece(-HALF_WIDTH, -edge, h) : piece(edge, HALF_WIDTH, h)] };
+      return { pose: 'upright', h, pieces: [coin() ? rect(-HALF_WIDTH, -edge, h) : rect(edge, HALF_WIDTH, h)] };
     },
     pillar() {
       const w = rand(0.2, 0.45), h = rand(0.8, 2.6);
-      return { pose: 'flat', h, pieces: [piece(-w, w, h)] };
+      return { pose: 'flat', h, pieces: [rect(-w, w, h)] };
     },
     twinBlocks() {
       const p = rand(0.8, 1.1), s = rand(0.5, 0.7);
-      return { pose: 'upright', h: s, pieces: [piece(-p - s / 2, -p + s / 2, s), piece(p - s / 2, p + s / 2, s)] };
+      return { pose: 'upright', h: s, pieces: [rect(-p - s / 2, -p + s / 2, s), rect(p - s / 2, p + s / 2, s)] };
     },
     block() {
-      const s = 0.7;
-      const centered = coin();
-      const p = (coin() ? 1 : -1) * (centered ? rand(0, 0.4) : rand(0.8, 1.0));
-      return { pose: centered ? 'flat' : 'upright', h: s, pieces: [piece(p - s / 2, p + s / 2, s)] };
+      const s = 0.7, centered = coin();
+      const p = sign() * (centered ? rand(0, 0.4) : rand(0.8, 1.0));
+      return { pose: centered ? 'flat' : 'upright', h: s, pieces: [rect(p - s / 2, p + s / 2, s)] };
+    },
+    spinner() {
+      const piece = bar(0, rand(1.0, 1.5), 0.28, rand(0, Math.PI), sign() * rand(1.5, 3));
+      return { pose: 'flat', h: 2 * reachOf(piece), rotating: true, pieces: [piece] };
+    },
+    cross() {
+      const len = rand(1.0, 1.4), a0 = rand(0, Math.PI), spin = sign() * rand(1.2, 2.4);
+      const pieces = [bar(0, len, 0.28, a0, spin), bar(0, len, 0.28, a0 + Math.PI / 2, spin)];
+      return { pose: 'flat', h: 2 * reachOf(pieces[0]), rotating: true, pieces };
+    },
+    twinSpinners() {
+      const p = rand(1.35, 1.6), len = rand(1.2, 1.7), spin = rand(1.5, 3);
+      const pieces = [bar(-p, len, 0.28, rand(0, Math.PI), spin), bar(p, len, 0.28, rand(0, Math.PI), -spin)];
+      return { pose: 'upright', h: 2 * reachOf(pieces[0]), rotating: true, pieces };
+    },
+    spinBlock() {
+      const s = 0.7, centered = coin();
+      const p = sign() * (centered ? rand(0, 0.3) : rand(0.9, 1.05));
+      const piece = { x: p, y: 0, hw: s / 2, hh: s / 2, a0: rand(0, Math.PI), spin: sign() * rand(2, 4), pass: null };
+      return { pose: centered ? 'flat' : 'upright', h: 2 * reachOf(piece), rotating: true, pieces: [piece] };
     },
   };
-  const WEIGHTS = { gapBar: 3, colorGate: 4, sideWall: 2, pillar: 2, twinBlocks: 2, block: 2 };
+  const WEIGHTS = { gapBar: 3, colorGate: 4, sideWall: 2, pillar: 2, twinBlocks: 2, block: 1, spinner: 2, cross: 2, twinSpinners: 2, spinBlock: 1 };
+  const ROTATING_KINDS = new Set(['spinner', 'cross', 'twinSpinners', 'spinBlock']);
 
-  function pickKind(history) {
-    const banned = history.length >= 2 && history[history.length - 1] === history[history.length - 2]
+  function pickKind(history, time) {
+    const repeated = history.length >= 2 && history[history.length - 1] === history[history.length - 2]
       ? history[history.length - 1] : null;
-    const entries = Object.entries(WEIGHTS).filter(([k]) => k !== banned);
+    const entries = Object.entries(WEIGHTS)
+      .filter(([k]) => k !== repeated && (time >= ROTATING_UNLOCK || !ROTATING_KINDS.has(k)));
     let roll = Math.random() * entries.reduce((sum, [, w]) => sum + w, 0);
     for (const [k, w] of entries) { roll -= w; if (roll <= 0) return k; }
     return entries[entries.length - 1][0];
@@ -277,17 +446,40 @@
     return 180;
   }
 
+  function pieceAngle(o, p) { return p.a0 + p.spin * o.age; }
+
+  function hitsPiece(bx, by, r, o, p) {
+    const ang = pieceAngle(o, p);
+    const dx = bx - p.x, dy = by - (o.y + p.y);
+    const c = Math.cos(ang), s = Math.sin(ang);
+    const lx = dx * c + dy * s, ly = -dx * s + dy * c;
+    const nx = Math.max(-p.hw, Math.min(lx, p.hw));
+    const ny = Math.max(-p.hh, Math.min(ly, p.hh));
+    return (lx - nx) ** 2 + (ly - ny) ** 2 < r * r;
+  }
+
+  // ---------- Game state ----------
+  const rampSpeed = t => Math.min(MAX_SPEED, START_SPEED + t * SPEED_RAMP);
+  const clampSpeed = s => Math.max(SPEED_FLOOR, Math.min(SPEED_CEIL, s));
+
+  function rollTempo(previous) {
+    let next;
+    do { next = Math.round(rand(TEMPO_MIN, TEMPO_MAX) * 20) / 20; } while (Math.abs(next - previous) < 0.3);
+    return next;
+  }
+
   let state;
   function reset(mode) {
+    const firstKind = pickKind([], 0);
     state = {
-      mode, angle: 0, time: 0, speed: START_SPEED, spawnTimer: 0.8,
-      tempo: 1, tempoTarget: 1, nextTempoAt: TEMPO_PERIOD,
-      obstacles: [], history: [], lastShape: null, next: null,
+      mode, angle: 0, time: 0, speed: START_SPEED, gapLeft: 4,
+      tempo: 1, tempoTarget: 1, upcomingTempo: rollTempo(1), nextTempoAt: TEMPO_PERIOD,
+      paletteIndex: 0, paletteFrom: PALETTES[0], paletteBlend: 1, nextPaletteAt: PALETTE_PERIOD,
+      obstacles: [], history: [firstKind], next: SHAPES[firstKind](),
       trails: { a: [], b: [] }, hit: null, hitTime: 0,
     };
-    const firstKind = pickKind([]);
-    state.history.push(firstKind);
-    state.next = SHAPES[firstKind]();
+    COLORS.a = PALETTES[0][0]; COLORS.b = PALETTES[0][1];
+    Music.setTempo(1);
     scoreEl.textContent = '0';
     bestEl.textContent = `Best ${best}`;
     toastEl.hidden = true;
@@ -302,27 +494,44 @@
   }
 
   function shiftTempo() {
-    let next;
-    do { next = rand(TEMPO_MIN, TEMPO_MAX); } while (Math.abs(next - state.tempoTarget) < 0.15);
+    const next = state.upcomingTempo;
     const faster = next > state.tempoTarget;
     state.tempoTarget = next;
-    showToast(`${faster ? 'Faster' : 'Slower'} · speed ×${next.toFixed(2)}`);
+    state.upcomingTempo = rollTempo(next);
+    showToast(`${faster ? 'Speed up' : 'Slow down'} · ×${next.toFixed(2)}`);
+  }
+
+  function shiftPalette() {
+    const current = PALETTES[state.paletteIndex];
+    state.paletteFrom = current;
+    state.paletteIndex = (state.paletteIndex + 1) % PALETTES.length;
+    state.paletteBlend = 0;
+    showToast('New colors · match the gates');
+  }
+
+  // Fastest speed the next obstacles might see, including an imminent tempo shift, so the
+  // gap always leaves enough time to rotate even if the speed jumps while they fall.
+  function worstCaseSpeed() {
+    const ramp = rampSpeed(state.time + 8);
+    let s = Math.max(state.speed, clampSpeed(ramp * state.tempoTarget));
+    if (state.nextTempoAt - state.time < 8) s = Math.max(s, clampSpeed(ramp * state.upcomingTempo));
+    return s;
   }
 
   function spawnNext() {
     const shape = state.next;
-    const kind = pickKind(state.history);
+    const kind = pickKind(state.history, state.time);
     state.history.push(kind);
     if (state.history.length > 4) state.history.shift();
 
     const spawnY = Math.max(6.5, halfH + 1.5);
-    state.obstacles.push({ y: spawnY + shape.h / 2, ...shape });
+    state.obstacles.push({ y: spawnY + shape.h / 2, age: 0, ...shape });
 
     const upcoming = SHAPES[kind]();
     const turnTime = turnBetween(shape.pose, upcoming.pose) / ROTATION_DEG_PER_SEC;
-    const clearTime = (shape.h / 2 + upcoming.h / 2 + 2 * ORBIT_RADIUS + 2 * BALL_RADIUS) / state.speed;
-    const base = Math.max(MIN_INTERVAL, BASE_INTERVAL - state.time * 0.01) * rand(0.8, 1.35);
-    state.spawnTimer = Math.max(base, clearTime + turnTime + 0.2);
+    const clearDist = shape.h / 2 + upcoming.h / 2 + 2 * ORBIT_RADIUS + 2 * BALL_RADIUS;
+    const rhythm = Math.max(MIN_INTERVAL, BASE_INTERVAL - state.time * 0.01) * rand(0.8, 1.35) * state.speed;
+    state.gapLeft = Math.max(rhythm, clearDist + (turnTime + 0.25) * worstCaseSpeed());
     state.next = upcoming;
   }
 
@@ -334,13 +543,7 @@
     };
   }
 
-  function circleHitsRect(cx, cy, r, x0, x1, y0, y1) {
-    const nx = Math.max(x0, Math.min(cx, x1));
-    const ny = Math.max(y0, Math.min(cy, y1));
-    return (cx - nx) ** 2 + (cy - ny) ** 2 < r * r;
-  }
-
-  // Input: which half of the screen is held (left = counter-clockwise), mirroring OrbitController.
+  // ---------- Input: which half of the screen is held (left = counter-clockwise) ----------
   const pointers = new Map();
   const keys = { left: false, right: false };
   function readInput() {
@@ -360,6 +563,7 @@
   window.addEventListener('keydown', e => {
     if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
     if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+    if (e.key === 'm' || e.key === 'M') { Music.toggle(); renderSoundButton(); }
     if ((e.key === ' ' || e.key === 'Enter') && state.mode !== 'play') { e.preventDefault(); startGame(); }
   });
   window.addEventListener('keyup', e => {
@@ -372,6 +576,7 @@
     reset('play');
     startPanel.hidden = true;
     overPanel.hidden = true;
+    Music.start();
   }
   document.getElementById('playBtn').addEventListener('click', startGame);
   document.getElementById('againBtn').addEventListener('click', startGame);
@@ -381,11 +586,13 @@
     state.hit = which;
     state.hitTime = 0;
     toastEl.hidden = true;
+    Music.stop();
+    Music.crash();
     const score = Math.floor(state.time * 10);
     const isBest = score > best;
     if (isBest) {
       best = score;
-      try { localStorage.setItem('split-orbit-best', String(best)); } catch (e) {}
+      store.set('split-orbit-best', String(best));
     }
     finalScoreEl.textContent = score;
     overLabelEl.textContent = isBest ? 'New best' : 'Game over';
@@ -408,17 +615,30 @@
         state.nextTempoAt += TEMPO_PERIOD;
         shiftTempo();
       }
-      state.tempo += (state.tempoTarget - state.tempo) * Math.min(1, dt * 1.5);
-      const ramp = Math.min(MAX_SPEED, START_SPEED + state.time * SPEED_RAMP);
-      state.speed = Math.max(SPEED_FLOOR, Math.min(SPEED_CEIL, ramp * state.tempo));
+      if (state.time >= state.nextPaletteAt) {
+        state.nextPaletteAt += PALETTE_PERIOD;
+        shiftPalette();
+      }
+      state.tempo += (state.tempoTarget - state.tempo) * Math.min(1, dt * 1.2);
+      state.speed = clampSpeed(rampSpeed(state.time) * state.tempo);
+      Music.setTempo(state.tempo);
+    }
 
-      state.spawnTimer -= dt;
-      if (state.spawnTimer <= 0) spawnNext();
+    if (state.paletteBlend < 1) {
+      state.paletteBlend = Math.min(1, state.paletteBlend + dt / 1.2);
+      const to = PALETTES[state.paletteIndex];
+      COLORS.a = mix(state.paletteFrom[0], to[0], state.paletteBlend);
+      COLORS.b = mix(state.paletteFrom[1], to[1], state.paletteBlend);
     }
 
     const dy = state.speed * dt * (state.mode === 'attract' ? 0.4 : 1);
-    for (const o of state.obstacles) o.y -= dy;
+    for (const o of state.obstacles) { o.y -= dy; o.age += dt; }
     state.obstacles = state.obstacles.filter(o => o.y + o.h / 2 > -halfH - 1);
+
+    if (state.mode === 'play') {
+      state.gapLeft -= dy;
+      if (state.gapLeft <= 0) spawnNext();
+    }
 
     const balls = ballPositions();
     for (const k of ['a', 'b']) {
@@ -433,7 +653,7 @@
       for (const p of o.pieces) {
         for (const k of ['a', 'b']) {
           if (p.pass === k) continue;
-          if (circleHitsRect(balls[k].x, balls[k].y, BALL_RADIUS, p.x0, p.x1, o.y + p.y0, o.y + p.y1)) {
+          if (hitsPiece(balls[k].x, balls[k].y, BALL_RADIUS, o, p)) {
             endGame(k);
             return;
           }
@@ -454,12 +674,24 @@
 
     for (const o of state.obstacles) {
       for (const p of o.pieces) {
+        ctx.save();
+        ctx.translate(toX(p.x), toY(o.y + p.y));
+        ctx.rotate(-pieceAngle(o, p));
         ctx.fillStyle = p.pass ? COLORS[p.pass] : COLORS.wall;
-        ctx.fillRect(toX(p.x0), toY(o.y + p.y1), (p.x1 - p.x0) * scale, (p.y1 - p.y0) * scale);
+        ctx.fillRect(-p.hw * scale, -p.hh * scale, 2 * p.hw * scale, 2 * p.hh * scale);
+        ctx.restore();
       }
       if (o.seam !== undefined) {
         ctx.fillStyle = COLORS.ink;
         ctx.fillRect(toX(o.seam) - 1, toY(o.y + o.h / 2), 2, o.h * scale);
+      }
+      if (o.rotating) {
+        ctx.fillStyle = COLORS.ink;
+        for (const p of o.pieces) {
+          ctx.beginPath();
+          ctx.arc(toX(p.x), toY(o.y + p.y), 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 

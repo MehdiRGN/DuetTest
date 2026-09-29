@@ -10,11 +10,17 @@ sections matching its own color.
 
 `web/index.html` is a lightweight, dependency-free HTML5 canvas version of
 the game ("Split Orbit"). It shares the Unity scripts' core feel (orbit
-radius, spin rate, speed ramp) and goes further on variety: six randomized
-obstacle shapes (gap bars, color gates whose colors swap sides, side walls,
-pillars, twin blocks, single blocks) in a non-repeating random order, spacing
-that always leaves time to rotate into the next required pose, and a random
-speed shift every 60 seconds.
+radius, spin rate, speed ramp) and goes further on variety:
+
+- Ten randomized obstacle shapes: gap bars, color gates whose colors swap
+  sides, side walls, pillars, twin blocks, single blocks, and (after 15 s)
+  rotating spinners, crosses, twin side spinners and spinning blocks.
+- A non-repeating random order, with spacing that always leaves time to rotate
+  into the next required pose, even across an upcoming speed jump.
+- Every 60 seconds the speed jumps to a random ×0.5 to ×2.
+- Every 2 minutes the ball colors (and the gates) switch to a new palette.
+- A generated soundtrack (WebAudio, no audio files) whose tempo follows the
+  game speed; toggle with the Music button or `M`.
 Open it directly in any browser — desktop or phone — to playtest the design
 without installing Unity. Hold the left/right half of the screen (or use
 `←`/`→`, `A`/`D`) to spin.
