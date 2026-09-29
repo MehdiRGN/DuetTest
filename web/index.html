@@ -11,11 +11,11 @@
   :root {
     --ink: #0d1117;
     --ink-veil: rgba(13, 17, 23, 0.78);
-    --line: #263040;
+    --line: #3a4760;
     --text: #e7eaf0;
     --muted: #8a95a6;
-    --a: #38c7ed;
-    --b: #f5528c;
+    --a: #2f7dff;
+    --b: #ff3b3b;
     --wall: #d6dae2;
     --display: "Unbounded", "Arial Black", system-ui, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -211,9 +211,9 @@
   const cssColor = name => css.getPropertyValue(name).trim();
   const PALETTES = [
     [cssColor('--a'), cssColor('--b')],
-    ['#8be04e', '#a77bff'],
-    ['#ffb23f', '#3d8bff'],
-    ['#3ee0b0', '#ff6b4a'],
+    ['#7ddc3a', '#9b6bff'],
+    ['#ffb52e', '#2ec5ff'],
+    ['#2fe0b0', '#ff6a2e'],
   ];
   const COLORS = { ink: cssColor('--ink'), line: cssColor('--line'), wall: cssColor('--wall'), a: PALETTES[0][0], b: PALETTES[0][1] };
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -662,8 +662,129 @@
     }
   }
 
+  // ---------- Rendering: light comes from the upper left, shadows fall down and right ----------
+  const parseColor = c => (c.startsWith('#') ? hexToRgb(c) : c.match(/\d+/g).slice(0, 3).map(Number));
+  const shade = (c, amount) => {
+    const rgb = parseColor(c).map(v => Math.round(amount >= 0 ? v + (255 - v) * amount : v * (1 + amount)));
+    return `rgb(${rgb.join(',')})`;
+  };
+
+  let background = null;
+  function buildBackground() {
+    background = ctx.createRadialGradient(W * 0.2, H * 0.08, 0, W * 0.2, H * 0.08, Math.hypot(W, H));
+    background.addColorStop(0, '#34405a');
+    background.addColorStop(0.5, '#232c3d');
+    background.addColorStop(1, '#131822');
+  }
+  window.addEventListener('resize', buildBackground);
+  buildBackground();
+
+  const shadowOffset = () => ({ x: 0.16 * scale, y: 0.26 * scale });
+  const depthOf = () => 0.1 * scale;
+
+  function pieceCorners(o, p) {
+    const a = pieceAngle(o, p), c = Math.cos(a), s = Math.sin(a);
+    return [[-p.hw, -p.hh], [p.hw, -p.hh], [p.hw, p.hh], [-p.hw, p.hh]]
+      .map(([lx, ly]) => [toX(p.x + lx * c - ly * s), toY(o.y + p.y + lx * s + ly * c)]);
+  }
+
+  function hull(points) {
+    const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lower = [], upper = [];
+    for (const p of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+    for (const p of pts.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+    return lower.slice(0, -1).concat(upper.slice(0, -1));
+  }
+
+  function tracePath(points) {
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.closePath();
+  }
+
+  // Canvas shadows only render under visible pixels, so draw the shape far off-screen and
+  // offset its shadow back into place to get a soft shadow on its own.
+  function castShadow(points, blur, alpha) {
+    const off = shadowOffset(), far = 10000;
+    ctx.save();
+    ctx.shadowColor = `rgba(0, 0, 0, ${alpha})`;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetX = far + off.x;
+    ctx.shadowOffsetY = off.y;
+    ctx.fillStyle = '#000';
+    tracePath(points.map(([x, y]) => [x - far, y]));
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function slab(o, p) {
+    const base = p.pass ? COLORS[p.pass] : COLORS.wall;
+    const top = pieceCorners(o, p);
+    const d = depthOf();
+    const body = hull(top.concat(top.map(([x, y]) => [x, y + d])));
+    return { base, top, body };
+  }
+
+  function drawSlab({ base, top, body }) {
+    tracePath(body);
+    ctx.fillStyle = shade(base, -0.5);
+    ctx.fill();
+
+    const ys = top.map(p => p[1]);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const face = ctx.createLinearGradient(0, y0, 0, y1 + 1);
+    face.addColorStop(0, shade(base, 0.28));
+    face.addColorStop(1, shade(base, -0.1));
+    tracePath(top);
+    ctx.fillStyle = face;
+    ctx.fill();
+
+    const rim = ctx.createLinearGradient(0, y0, 0, y1 + 1);
+    rim.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
+    rim.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  function drawHub(x, y) {
+    const r = Math.max(3, 0.08 * scale);
+    const g = ctx.createRadialGradient(x - r * 0.4, y - r * 0.4, 0, x, y, r);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(1, '#6b7482');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawSphere(x, y, r, base) {
+    const body = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.05, x, y, r);
+    body.addColorStop(0, shade(base, 0.6));
+    body.addColorStop(0.35, shade(base, 0.12));
+    body.addColorStop(0.8, base);
+    body.addColorStop(1, shade(base, -0.55));
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    const bounce = ctx.createRadialGradient(x + r * 0.35, y + r * 0.45, 0, x + r * 0.35, y + r * 0.45, r * 0.55);
+    bounce.addColorStop(0, `rgba(255, 255, 255, 0.18)`);
+    bounce.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = bounce;
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.beginPath();
+    ctx.ellipse(x - r * 0.38, y - r * 0.42, r * 0.2, r * 0.13, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   function draw() {
-    ctx.fillStyle = COLORS.ink;
+    ctx.fillStyle = background;
     ctx.fillRect(0, 0, W, H);
 
     ctx.strokeStyle = COLORS.line;
@@ -672,27 +793,12 @@
     ctx.arc(toX(0), toY(PIVOT_Y), ORBIT_RADIUS * scale, 0, Math.PI * 2);
     ctx.stroke();
 
+    const slabs = [];
+    for (const o of state.obstacles) for (const p of o.pieces) slabs.push(slab(o, p));
+    for (const s of slabs) castShadow(s.body, 0.1 * scale, 0.7);
+    for (const s of slabs) drawSlab(s);
     for (const o of state.obstacles) {
-      for (const p of o.pieces) {
-        ctx.save();
-        ctx.translate(toX(p.x), toY(o.y + p.y));
-        ctx.rotate(-pieceAngle(o, p));
-        ctx.fillStyle = p.pass ? COLORS[p.pass] : COLORS.wall;
-        ctx.fillRect(-p.hw * scale, -p.hh * scale, 2 * p.hw * scale, 2 * p.hh * scale);
-        ctx.restore();
-      }
-      if (o.seam !== undefined) {
-        ctx.fillStyle = COLORS.ink;
-        ctx.fillRect(toX(o.seam) - 1, toY(o.y + o.h / 2), 2, o.h * scale);
-      }
-      if (o.rotating) {
-        ctx.fillStyle = COLORS.ink;
-        for (const p of o.pieces) {
-          ctx.beginPath();
-          ctx.arc(toX(p.x), toY(o.y + p.y), 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
+      if (o.rotating) for (const p of o.pieces) drawHub(toX(p.x), toY(o.y + p.y));
     }
 
     const balls = ballPositions();
@@ -701,7 +807,7 @@
       ctx.fillStyle = COLORS[k];
       for (let i = 0; i < trail.length - 1; i++) {
         const t = i / trail.length;
-        ctx.globalAlpha = t * 0.35;
+        ctx.globalAlpha = t * 0.3;
         ctx.beginPath();
         ctx.arc(toX(trail[i].x), toY(trail[i].y), BALL_RADIUS * scale * (0.35 + t * 0.6), 0, Math.PI * 2);
         ctx.fill();
@@ -709,15 +815,20 @@
       ctx.globalAlpha = 1;
     }
 
+    const r = BALL_RADIUS * scale;
     for (const k of ['a', 'b']) {
-      const x = toX(balls[k].x), y = toY(balls[k].y), r = BALL_RADIUS * scale;
-      ctx.fillStyle = COLORS[k];
-      ctx.shadowColor = COLORS[k];
-      ctx.shadowBlur = 18;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      const x = toX(balls[k].x), y = toY(balls[k].y);
+      const ring = [];
+      for (let i = 0; i < 20; i++) {
+        const t = (i / 20) * Math.PI * 2;
+        ring.push([x + Math.cos(t) * r * 0.95, y + Math.sin(t) * r * 0.8]);
+      }
+      castShadow(ring, 0.12 * scale, 0.7);
+    }
+
+    for (const k of ['a', 'b']) {
+      const x = toX(balls[k].x), y = toY(balls[k].y);
+      drawSphere(x, y, r, COLORS[k]);
 
       if (state.hit === k && !reducedMotion) {
         const t = Math.min(state.hitTime / 0.5, 1);
