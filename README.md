@@ -19,8 +19,10 @@ radius, spin rate, speed ramp) and goes further on variety:
   into the next required pose, even across an upcoming speed jump.
 - Every 60 seconds the speed jumps to a random ×0.5 to ×2.
 - Every 2 minutes the ball colors (and the gates) switch to a new palette.
-- A generated soundtrack (WebAudio, no audio files) whose tempo follows the
-  game speed; toggle with the Music button or `M`.
+- A generated soundtrack (WebAudio, no audio files) in four styles (Pulse,
+  Drift, Neon, Drive). Each run starts on a random style and switches on every
+  speed jump; tempo follows the game speed. Toggle with the Music button or `M`.
+- A drifting parallax background of faint outlined shapes.
 Open it directly in any browser — desktop or phone — to playtest the design
 without installing Unity. Hold the left/right half of the screen (or use
 `←`/`→`, `A`/`D`) to spin.

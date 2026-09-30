@@ -171,7 +171,7 @@
       <li><span class="glyph wall"></span><span><b>Grey walls:</b> turn upright and slip both balls through the gap.</span></li>
       <li><span class="glyph gate"></span><span><b>Split gates:</b> lie flat with each ball over its own color. Sides swap.</span></li>
       <li><span class="glyph pillar"></span><span><b>Pillars and spinners:</b> spinners in the middle need you flat, spinners at the sides need you upright.</span></li>
-      <li><span class="glyph shift"></span><span><b>Every minute</b> the speed jumps between ×0.5 and ×2. Every two minutes the ball colors change.</span></li>
+      <li><span class="glyph shift"></span><span><b>Every minute</b> the speed jumps between ×0.5 and ×2. The music changes style with it, and every two minutes the ball colors change.</span></li>
     </ul>
     <button class="play" id="playBtn" type="button">Play</button>
     <p class="keys">Keyboard: <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd>, <kbd>Space</kbd> to start, <kbd>M</kbd> for music</p>
@@ -260,12 +260,10 @@
     return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`;
   };
 
-  // ---------- Music: a small WebAudio synth loop whose tempo follows game speed ----------
+  // ---------- Music: generated WebAudio styles; tempo follows game speed ----------
   const Music = (() => {
-    const CHORDS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
-    const BASE_BPM = 112;
     let ac = null, master = null, noise = null, timer = null;
-    let step = 0, nextTime = 0, bpm = BASE_BPM, playing = false;
+    let step = 0, nextTime = 0, playing = false, tempoMul = 1, style = 0, pending = null;
     let muted = store.get('split-orbit-muted') === '1';
     const mtof = m => 440 * 2 ** ((m - 69) / 12);
 
@@ -277,7 +275,7 @@
         master = ac.createGain();
         master.gain.value = muted ? 0 : 0.45;
         master.connect(ac.destination);
-        noise = ac.createBuffer(1, ac.sampleRate * 0.2, ac.sampleRate);
+        noise = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate);
         const data = noise.getChannelData(0);
         for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
       }
@@ -285,51 +283,110 @@
       return true;
     }
 
-    function tone(freq, t, dur, type, vol) {
-      const osc = ac.createOscillator(), g = ac.createGain();
-      osc.type = type; osc.frequency.setValueAtTime(freq, t);
+    function envelope(g, t, vol, attack, dur) {
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(vol, t + attack);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      osc.connect(g).connect(master);
-      osc.start(t); osc.stop(t + dur + 0.02);
     }
-    function kick(t) {
+    function voice(freq, t, dur, { type = 'sine', vol = 0.1, attack = 0.01, cutoff = 0, detune = 0 } = {}) {
+      const osc = ac.createOscillator(), g = ac.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.detune.value = detune;
+      let out = osc;
+      if (cutoff) {
+        const f = ac.createBiquadFilter();
+        f.type = 'lowpass'; f.frequency.value = cutoff;
+        osc.connect(f); out = f;
+      }
+      out.connect(g).connect(master);
+      envelope(g, t, vol, attack, dur);
+      osc.start(t); osc.stop(t + dur + 0.05);
+    }
+    function kick(t, vol = 0.8) {
       const osc = ac.createOscillator(), g = ac.createGain();
       osc.frequency.setValueAtTime(140, t);
       osc.frequency.exponentialRampToValueAtTime(42, t + 0.14);
-      g.gain.setValueAtTime(0.8, t);
+      g.gain.setValueAtTime(vol, t);
       g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
       osc.connect(g).connect(master);
       osc.start(t); osc.stop(t + 0.2);
     }
-    function hat(t, vol) {
-      const src = ac.createBufferSource(), hp = ac.createBiquadFilter(), g = ac.createGain();
-      src.buffer = noise; hp.type = 'highpass'; hp.frequency.value = 7000;
+    function noiseHit(t, vol, decay, type, freq) {
+      const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+      src.buffer = noise; f.type = type; f.frequency.value = freq;
       g.gain.setValueAtTime(vol, t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-      src.connect(hp).connect(g).connect(master);
-      src.start(t); src.stop(t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+      src.connect(f).connect(g).connect(master);
+      src.start(t); src.stop(t + decay + 0.02);
     }
-    function playStep(s, t, sixteenth) {
-      const i = s % 16, chord = CHORDS[Math.floor(s / 16) % CHORDS.length];
-      if (i % 4 === 0) kick(t);
-      if (i % 2 === 1) hat(t, i % 4 === 2 ? 0.12 : 0.06);
-      if (i % 8 === 0) tone(mtof(chord[0] - 24), t, sixteenth * 7, 'triangle', 0.3);
-      const note = chord[i % 3] + 12 + (i % 6 >= 3 ? 12 : 0);
-      tone(mtof(note), t, sixteenth * 0.9, 'square', 0.045);
-    }
+    const hat = (t, vol, decay = 0.05) => noiseHit(t, vol, decay, 'highpass', 7000);
+    const snare = t => { noiseHit(t, 0.28, 0.14, 'bandpass', 1800); voice(190, t, 0.08, { type: 'triangle', vol: 0.15 }); };
+    const pad = (notes, t, dur, vol) => notes.forEach(n => [-7, 7].forEach(d =>
+      voice(mtof(n), t, dur, { type: 'sawtooth', vol, attack: Math.min(0.5, dur * 0.3), cutoff: 900, detune: d })));
+    const bell = (n, t, vol) => { voice(mtof(n), t, 1.2, { vol }); voice(mtof(n) * 2.76, t, 0.5, { vol: vol * 0.3 }); };
+
+    const STYLES = [
+      {
+        name: 'Pulse', bpm: 112, chords: [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]],
+        play(i, t, s, ch) {
+          if (i % 4 === 0) kick(t);
+          if (i % 2 === 1) hat(t, i % 4 === 2 ? 0.12 : 0.06);
+          if (i % 8 === 0) voice(mtof(ch[0] - 24), t, s * 7, { type: 'triangle', vol: 0.3 });
+          voice(mtof(ch[i % 3] + 12 + (i % 6 >= 3 ? 12 : 0)), t, s * 0.9, { type: 'square', vol: 0.045 });
+        },
+      },
+      {
+        name: 'Drift', bpm: 88, chords: [[62, 66, 69, 73], [59, 62, 66, 69], [55, 59, 62, 66], [57, 61, 64, 69]],
+        play(i, t, s, ch) {
+          if (i === 0) pad(ch, t, s * 16, 0.035);
+          if (i === 0 || i === 8) voice(mtof(ch[0] - 24), t, s * 8, { vol: 0.22, attack: 0.05 });
+          if ([0, 3, 6, 10, 13].includes(i) && Math.random() < 0.8) bell(ch[(i * 7) % ch.length] + 12, t, 0.07);
+          if (i % 4 === 2) hat(t, 0.035, 0.08);
+        },
+      },
+      {
+        name: 'Neon', bpm: 104, chords: [[64, 67, 71], [60, 64, 67], [67, 71, 74], [62, 66, 69]],
+        play(i, t, s, ch) {
+          if (i % 4 === 0) kick(t, 0.7);
+          if (i === 4 || i === 12) snare(t);
+          if (i % 2 === 1) hat(t, 0.05);
+          if (i === 0) pad(ch, t, s * 15, 0.022);
+          if (i % 2 === 0) {
+            voice(mtof(ch[0] - 24), t, s * 1.6, { type: 'sawtooth', vol: 0.12, cutoff: 700 });
+            voice(mtof(ch[[0, 2, 1, 2, 0, 1, 2, 1][i / 2]] + 12), t, s * 1.8, { type: 'triangle', vol: 0.08 });
+          }
+        },
+      },
+      {
+        name: 'Drive', bpm: 124, chords: [[57, 60, 64], [57, 60, 64], [53, 57, 60], [55, 59, 62]],
+        play(i, t, s, ch) {
+          if (i % 4 === 0) kick(t, 0.9);
+          hat(t, i % 4 === 2 ? 0.14 : 0.04, i % 4 === 2 ? 0.12 : 0.05);
+          if (i % 4 !== 0) voice(mtof(ch[0] - 24 + (i % 8 === 6 ? 12 : 0)), t, s * 0.8, { type: 'sawtooth', vol: 0.14, cutoff: 500 + i * 60 });
+          if (i === 0 || i === 10) ch.forEach(n => voice(mtof(n + 12), t, s * 1.2, { type: 'square', vol: 0.03, cutoff: 2000 }));
+        },
+      },
+    ];
+
     function schedule() {
-      const sixteenth = 60 / bpm / 4;
       while (nextTime < ac.currentTime + 0.12) {
-        playStep(step, nextTime, sixteenth);
+        const i = step % 16;
+        if (i === 0 && pending !== null) { style = pending; pending = null; }
+        const current = STYLES[style];
+        const sixteenth = 60 / (current.bpm * tempoMul) / 4;
+        const chord = current.chords[Math.floor(step / 16) % current.chords.length];
+        current.play(i, nextTime, sixteenth, chord);
         nextTime += sixteenth;
         step++;
       }
     }
+
     return {
-      start() {
+      styleCount: STYLES.length,
+      start(styleIndex) {
         if (!ensure()) return;
+        style = styleIndex % STYLES.length; pending = null;
         if (playing) return;
         playing = true; step = 0; nextTime = ac.currentTime + 0.06;
         timer = setInterval(schedule, 25);
@@ -341,11 +398,17 @@
       crash() {
         if (!ac) return;
         const t = ac.currentTime;
-        tone(220, t, 0.5, 'sawtooth', 0.12);
-        tone(110, t + 0.08, 0.6, 'triangle', 0.25);
+        voice(220, t, 0.5, { type: 'sawtooth', vol: 0.12 });
+        voice(110, t + 0.08, 0.6, { type: 'triangle', vol: 0.25 });
+      },
+      // Switches at the next bar line so the change lands on the beat.
+      nextStyle() {
+        const from = pending !== null ? pending : style;
+        pending = (from + 1 + Math.floor(Math.random() * (STYLES.length - 1))) % STYLES.length;
+        return STYLES[pending].name;
       },
       setTempo(multiplier) {
-        bpm = BASE_BPM * Math.max(0.75, Math.min(1.4, 1 + (multiplier - 1) * 0.4));
+        tempoMul = Math.max(0.75, Math.min(1.4, 1 + (multiplier - 1) * 0.4));
       },
       get muted() { return muted; },
       toggle() {
@@ -498,7 +561,7 @@
     const faster = next > state.tempoTarget;
     state.tempoTarget = next;
     state.upcomingTempo = rollTempo(next);
-    showToast(`${faster ? 'Speed up' : 'Slow down'} · ×${next.toFixed(2)}`);
+    showToast(`${faster ? 'Speed up' : 'Slow down'} · ×${next.toFixed(2)} · ${Music.nextStyle()}`);
   }
 
   function shiftPalette() {
@@ -576,7 +639,7 @@
     reset('play');
     startPanel.hidden = true;
     overPanel.hidden = true;
-    Music.start();
+    Music.start(Math.floor(Math.random() * Music.styleCount));
   }
   document.getElementById('playBtn').addEventListener('click', startGame);
   document.getElementById('againBtn').addEventListener('click', startGame);
@@ -633,6 +696,7 @@
 
     const dy = state.speed * dt * (state.mode === 'attract' ? 0.4 : 1);
     for (const o of state.obstacles) { o.y -= dy; o.age += dt; }
+    moveBackground(dy, dt);
     state.obstacles = state.obstacles.filter(o => o.y + o.h / 2 > -halfH - 1);
 
     if (state.mode === 'play') {
@@ -783,9 +847,88 @@
     ctx.fill();
   }
 
+  // Background: faint outlined shapes on parallax layers. Outlines only, so they never
+  // read as the solid, lit obstacles.
+  const BG_KINDS = ['ring', 'triangle', 'square', 'plus', 'dot', 'hexagon'];
+  let bgShapes = [];
+
+  function makeBgShape(y) {
+    const depth = rand(0.15, 1);
+    const size = (8 + depth * 30) * (scale / 60);
+    return {
+      kind: BG_KINDS[Math.floor(Math.random() * BG_KINDS.length)],
+      x: rand(-20, W + 20),
+      y: y !== undefined ? y : -size - rand(0, 60),
+      depth, size,
+      parallax: (0.08 + depth * 0.32) * (reducedMotion ? 0.3 : 1),
+      alpha: 0.05 + depth * 0.13,
+      rot: rand(0, Math.PI * 2),
+      spin: reducedMotion ? 0 : rand(-0.6, 0.6),
+      tint: ['a', 'b', 'neutral'][Math.floor(Math.random() * 3)],
+    };
+  }
+
+  function buildBgShapes() {
+    const count = Math.max(14, Math.min(40, Math.round((W * H) / 18000)));
+    bgShapes = Array.from({ length: count }, () => makeBgShape(rand(-40, H + 40)))
+      .sort((p, q) => p.depth - q.depth);
+  }
+  window.addEventListener('resize', buildBgShapes);
+  buildBgShapes();
+
+  function moveBackground(dyWorld, dt) {
+    for (let i = 0; i < bgShapes.length; i++) {
+      const s = bgShapes[i];
+      s.y += dyWorld * scale * s.parallax;
+      s.rot += s.spin * dt;
+      if (s.y - s.size > H) {
+        const fresh = makeBgShape();
+        fresh.depth = s.depth; fresh.size = s.size; fresh.parallax = s.parallax; fresh.alpha = s.alpha;
+        bgShapes[i] = fresh;
+      }
+    }
+  }
+
+  function polygon(n, r) {
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+      ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath();
+  }
+
+  function drawBackgroundShapes() {
+    for (const s of bgShapes) {
+      const color = s.tint === 'neutral' ? '#c9d2e3' : COLORS[s.tint];
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      ctx.rotate(s.rot);
+      ctx.globalAlpha = s.alpha;
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1.2 + s.depth * 1.6;
+      const r = s.size;
+      switch (s.kind) {
+        case 'ring': ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke(); break;
+        case 'triangle': polygon(3, r); ctx.stroke(); break;
+        case 'square': ctx.strokeRect(-r * 0.8, -r * 0.8, r * 1.6, r * 1.6); break;
+        case 'hexagon': polygon(6, r); ctx.stroke(); break;
+        case 'plus':
+          ctx.beginPath();
+          ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.moveTo(0, -r); ctx.lineTo(0, r);
+          ctx.stroke();
+          break;
+        default: ctx.beginPath(); ctx.arc(0, 0, r * 0.3, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
   function draw() {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, W, H);
+    drawBackgroundShapes();
 
     ctx.strokeStyle = COLORS.line;
     ctx.lineWidth = 1;
